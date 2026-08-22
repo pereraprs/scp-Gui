@@ -90,11 +90,15 @@ class SCPClient:
 
     @staticmethod
     def _load_private_key(key_path, passphrase):
-        """Try the common key types until one parses the given file."""
-        key_classes = (
-            paramiko.RSAKey, paramiko.Ed25519Key,
-            paramiko.ECDSAKey, paramiko.DSSKey,
-        )
+        """Try the common key types until one parses the given file.
+
+        DSSKey (DSA) was removed in paramiko 4.0+ since DSA keys are
+        deprecated/insecure and no longer supported by OpenSSH either,
+        so we only reference it if the installed paramiko still has it.
+        """
+        key_classes = [paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey]
+        if hasattr(paramiko, "DSSKey"):
+            key_classes.append(paramiko.DSSKey)
         last_error = None
         for cls in key_classes:
             try:
@@ -116,6 +120,16 @@ class SCPClient:
     def _require_connection(self):
         if not self.connected or self._sftp is None:
             raise SSHConnectionError("Not connected to a remote host.")
+
+    def get_home_dir(self):
+        """Return the absolute path of the remote login directory.
+
+        SFTP servers accept "." as shorthand for the current (home)
+        directory, but that's confusing to display in the GUI -- this
+        resolves it to a real path like /home/ubuntu.
+        """
+        self._require_connection()
+        return self._sftp.normalize(".")
 
     # ------------------------------------------------------------------ #
     # Directory / file operations
