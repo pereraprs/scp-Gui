@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# Packaging output
+packaging/build/
+*.deb
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

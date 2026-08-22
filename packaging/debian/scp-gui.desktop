@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=SCP GUI
+Comment=Secure file transfer over SSH (SFTP/SCP)
+Exec=scp-gui
+Icon=system-file-manager
+Terminal=false
+Type=Application
+Categories=Network;FileTransfer;

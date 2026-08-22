@@ -1,0 +1,350 @@
+"""
+main_window.py
+---------------
+PyQt5 GUI: a dual-pane file manager (local | remote) for SCP/SFTP transfers,
+similar in spirit to WinSCP / FileZilla.
+"""
+
+import os
+
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
+    QLineEdit, QSpinBox, QPushButton, QLabel, QSplitter, QTreeView,
+    QTreeWidget, QTreeWidgetItem, QFileSystemModel, QToolBar, QAction,
+    QProgressBar, QMessageBox, QInputDialog, QFileDialog, QStatusBar,
+)
+
+from scpgui.ssh_client import SCPClient, SSHConnectionError
+
+
+# ---------------------------------------------------------------------- #
+# Background worker threads (keep the GUI responsive)
+# ---------------------------------------------------------------------- #
+class ConnectWorker(QThread):
+    finished = pyqtSignal(bool, str)  # success, message
+
+    def __init__(self, client, host, port, username, password, key_path):
+        super().__init__()
+        self.client = client
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.key_path = key_path
+
+    def run(self):
+        try:
+            self.client.connect(
+                self.host, self.port, self.username,
+                password=self.password or None,
+                key_path=self.key_path or None,
+            )
+            self.finished.emit(True, f"Connected to {self.username}@{self.host}")
+        except SSHConnectionError as exc:
+            self.finished.emit(False, str(exc))
+
+
+class TransferWorker(QThread):
+    progress = pyqtSignal(int, int)   # bytes done, total bytes
+    finished = pyqtSignal(bool, str)  # success, message
+
+    def __init__(self, action, client, src, dst, is_dir):
+        super().__init__()
+        self.action = action  # "upload" or "download"
+        self.client = client
+        self.src = src
+        self.dst = dst
+        self.is_dir = is_dir
+
+    def _callback(self, done, total):
+        self.progress.emit(done, total)
+
+    def run(self):
+        try:
+            if self.action == "upload":
+                if self.is_dir:
+                    self.client.upload_directory(self.src, self.dst, self._callback)
+                else:
+                    self.client.upload(self.src, self.dst, self._callback)
+            else:
+                if self.is_dir:
+                    self.client.download_directory(self.src, self.dst, self._callback)
+                else:
+                    self.client.download(self.src, self.dst, self._callback)
+            self.finished.emit(True, "Transfer complete")
+        except (SSHConnectionError, IOError, OSError) as exc:
+            self.finished.emit(False, str(exc))
+
+
+# ---------------------------------------------------------------------- #
+# Main window
+# ---------------------------------------------------------------------- #
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("SCP GUI — Secure File Transfer")
+        self.resize(1100, 650)
+
+        self.client = SCPClient()
+        self.remote_path = "/"
+
+        self._build_ui()
+
+    # ------------------------------------------------------------------ #
+    def _build_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        outer = QVBoxLayout(central)
+
+        # --- connection bar ---
+        conn_bar = QHBoxLayout()
+        self.host_edit = QLineEdit()
+        self.host_edit.setPlaceholderText("host")
+        self.port_edit = QSpinBox()
+        self.port_edit.setRange(1, 65535)
+        self.port_edit.setValue(22)
+        self.user_edit = QLineEdit()
+        self.user_edit.setPlaceholderText("username")
+        self.pass_edit = QLineEdit()
+        self.pass_edit.setPlaceholderText("password (or leave blank for key)")
+        self.pass_edit.setEchoMode(QLineEdit.Password)
+        self.key_edit = QLineEdit()
+        self.key_edit.setPlaceholderText("private key path (optional)")
+        key_browse = QPushButton("...")
+        key_browse.setMaximumWidth(30)
+        key_browse.clicked.connect(self._browse_key)
+        self.connect_btn = QPushButton("Connect")
+        self.connect_btn.clicked.connect(self._on_connect_clicked)
+
+        for w, label in [
+            (self.host_edit, "Host"), (self.port_edit, "Port"),
+            (self.user_edit, "User"), (self.pass_edit, "Password"),
+        ]:
+            conn_bar.addWidget(QLabel(label + ":"))
+            conn_bar.addWidget(w)
+        conn_bar.addWidget(QLabel("Key:"))
+        conn_bar.addWidget(self.key_edit)
+        conn_bar.addWidget(key_browse)
+        conn_bar.addWidget(self.connect_btn)
+        outer.addLayout(conn_bar)
+
+        # --- dual pane splitter ---
+        splitter = QSplitter(Qt.Horizontal)
+
+        # local pane
+        local_container = QWidget()
+        local_layout = QVBoxLayout(local_container)
+        local_layout.addWidget(QLabel("Local"))
+        self.local_model = QFileSystemModel()
+        self.local_model.setRootPath(os.path.expanduser("~"))
+        self.local_view = QTreeView()
+        self.local_view.setModel(self.local_model)
+        self.local_view.setRootIndex(self.local_model.index(os.path.expanduser("~")))
+        self.local_view.setColumnWidth(0, 250)
+        local_layout.addWidget(self.local_view)
+        splitter.addWidget(local_container)
+
+        # transfer buttons (middle)
+        mid_container = QWidget()
+        mid_layout = QVBoxLayout(mid_container)
+        mid_layout.addStretch()
+        self.upload_btn = QPushButton("Upload →")
+        self.upload_btn.clicked.connect(self._on_upload)
+        self.download_btn = QPushButton("← Download")
+        self.download_btn.clicked.connect(self._on_download)
+        mid_layout.addWidget(self.upload_btn)
+        mid_layout.addWidget(self.download_btn)
+        mid_layout.addStretch()
+        splitter.addWidget(mid_container)
+
+        # remote pane
+        remote_container = QWidget()
+        remote_layout = QVBoxLayout(remote_container)
+        self.remote_path_label = QLabel("Remote: /")
+        remote_layout.addWidget(self.remote_path_label)
+        self.remote_tree = QTreeWidget()
+        self.remote_tree.setHeaderLabels(["Name", "Size", "Type"])
+        self.remote_tree.itemDoubleClicked.connect(self._on_remote_double_click)
+        remote_layout.addWidget(self.remote_tree)
+        remote_btns = QHBoxLayout()
+        up_btn = QPushButton("Up")
+        up_btn.clicked.connect(self._remote_go_up)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self._refresh_remote)
+        mkdir_btn = QPushButton("New Folder")
+        mkdir_btn.clicked.connect(self._on_mkdir)
+        delete_btn = QPushButton("Delete")
+        delete_btn.clicked.connect(self._on_delete_remote)
+        for b in (up_btn, refresh_btn, mkdir_btn, delete_btn):
+            remote_btns.addWidget(b)
+        remote_layout.addLayout(remote_btns)
+        splitter.addWidget(remote_container)
+
+        splitter.setSizes([400, 80, 400])
+        outer.addWidget(splitter, stretch=1)
+
+        # --- progress + status ---
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        outer.addWidget(self.progress_bar)
+
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Not connected")
+
+        self._set_remote_controls_enabled(False)
+
+    def _set_remote_controls_enabled(self, enabled):
+        self.upload_btn.setEnabled(enabled)
+        self.download_btn.setEnabled(enabled)
+        self.remote_tree.setEnabled(enabled)
+
+    # ------------------------------------------------------------------ #
+    # Connection handling
+    # ------------------------------------------------------------------ #
+    def _browse_key(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select private key",
+                                               os.path.expanduser("~/.ssh"))
+        if path:
+            self.key_edit.setText(path)
+
+    def _on_connect_clicked(self):
+        host = self.host_edit.text().strip()
+        port = self.port_edit.value()
+        username = self.user_edit.text().strip()
+        password = self.pass_edit.text()
+        key_path = self.key_edit.text().strip()
+
+        if not host or not username:
+            QMessageBox.warning(self, "Missing info", "Host and username are required.")
+            return
+
+        self.connect_btn.setEnabled(False)
+        self.status_bar.showMessage(f"Connecting to {host}...")
+
+        self._connect_worker = ConnectWorker(self.client, host, port, username,
+                                              password, key_path)
+        self._connect_worker.finished.connect(self._on_connect_finished)
+        self._connect_worker.start()
+
+    def _on_connect_finished(self, success, message):
+        self.connect_btn.setEnabled(True)
+        self.status_bar.showMessage(message)
+        if success:
+            self._set_remote_controls_enabled(True)
+            self.remote_path = "."
+            self._refresh_remote()
+        else:
+            QMessageBox.critical(self, "Connection failed", message)
+
+    # ------------------------------------------------------------------ #
+    # Remote browsing
+    # ------------------------------------------------------------------ #
+    def _refresh_remote(self):
+        try:
+            entries = self.client.list_dir(self.remote_path)
+        except SSHConnectionError as exc:
+            QMessageBox.critical(self, "Error", str(exc))
+            return
+
+        self.remote_tree.clear()
+        for entry in entries:
+            size_str = "" if entry.is_dir else str(entry.size)
+            type_str = "Folder" if entry.is_dir else "File"
+            item = QTreeWidgetItem([entry.name, size_str, type_str])
+            item.setData(0, Qt.UserRole, entry.is_dir)
+            self.remote_tree.addTopLevelItem(item)
+        self.remote_path_label.setText(f"Remote: {self.remote_path}")
+
+    def _remote_go_up(self):
+        if self.remote_path in (".", "/"):
+            return
+        self.remote_path = os.path.dirname(self.remote_path.rstrip("/")) or "/"
+        self._refresh_remote()
+
+    def _on_remote_double_click(self, item, _column):
+        is_dir = item.data(0, Qt.UserRole)
+        if is_dir:
+            self.remote_path = self.remote_path.rstrip("/") + "/" + item.text(0)
+            self._refresh_remote()
+
+    def _on_mkdir(self):
+        name, ok = QInputDialog.getText(self, "New folder", "Folder name:")
+        if ok and name:
+            try:
+                self.client.mkdir(self.remote_path.rstrip("/") + "/" + name)
+                self._refresh_remote()
+            except SSHConnectionError as exc:
+                QMessageBox.critical(self, "Error", str(exc))
+
+    def _on_delete_remote(self):
+        item = self.remote_tree.currentItem()
+        if not item:
+            return
+        is_dir = item.data(0, Qt.UserRole)
+        confirm = QMessageBox.question(
+            self, "Confirm delete", f"Delete '{item.text(0)}'?",
+        )
+        if confirm == QMessageBox.Yes:
+            try:
+                full_path = self.remote_path.rstrip("/") + "/" + item.text(0)
+                self.client.remove(full_path, is_dir)
+                self._refresh_remote()
+            except SSHConnectionError as exc:
+                QMessageBox.critical(self, "Error", str(exc))
+
+    # ------------------------------------------------------------------ #
+    # Transfers
+    # ------------------------------------------------------------------ #
+    def _on_upload(self):
+        index = self.local_view.currentIndex()
+        if not index.isValid():
+            QMessageBox.information(self, "Select a file", "Pick a local file or folder first.")
+            return
+        local_path = self.local_model.filePath(index)
+        is_dir = self.local_model.isDir(index)
+        remote_target = self.remote_path.rstrip("/") + "/" + os.path.basename(local_path)
+        self._start_transfer("upload", local_path, remote_target, is_dir)
+
+    def _on_download(self):
+        item = self.remote_tree.currentItem()
+        if not item:
+            QMessageBox.information(self, "Select a file", "Pick a remote file or folder first.")
+            return
+        is_dir = item.data(0, Qt.UserRole)
+        remote_path = self.remote_path.rstrip("/") + "/" + item.text(0)
+
+        local_dir = QFileDialog.getExistingDirectory(self, "Choose download destination",
+                                                       os.path.expanduser("~"))
+        if not local_dir:
+            return
+        local_target = os.path.join(local_dir, item.text(0))
+        self._start_transfer("download", remote_path, local_target, is_dir)
+
+    def _start_transfer(self, action, src, dst, is_dir):
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.status_bar.showMessage(f"{action.capitalize()}ing {os.path.basename(src)}...")
+
+        self._transfer_worker = TransferWorker(action, self.client, src, dst, is_dir)
+        self._transfer_worker.progress.connect(self._on_transfer_progress)
+        self._transfer_worker.finished.connect(self._on_transfer_finished)
+        self._transfer_worker.start()
+
+    def _on_transfer_progress(self, done, total):
+        if total:
+            self.progress_bar.setValue(int(done * 100 / total))
+
+    def _on_transfer_finished(self, success, message):
+        self.progress_bar.setVisible(False)
+        self.status_bar.showMessage(message)
+        if success:
+            self._refresh_remote()
+        else:
+            QMessageBox.critical(self, "Transfer failed", message)
+
+    # ------------------------------------------------------------------ #
+    def closeEvent(self, event):
+        self.client.disconnect()
+        event.accept()

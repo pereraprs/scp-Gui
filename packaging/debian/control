@@ -1,0 +1,12 @@
+Package: scp-gui
+Version: 0.1.0
+Section: net
+Priority: optional
+Architecture: all
+Depends: python3 (>= 3.8), python3-pyqt5, python3-paramiko
+Maintainer: You <you@example.com>
+Description: Simple GUI SCP/SFTP file transfer client
+ A dual-pane graphical file manager for securely transferring files
+ to and from remote hosts over SSH (SFTP/SCP), similar in spirit to
+ WinSCP. Supports password and private-key authentication, directory
+ browsing, and recursive upload/download with progress feedback.
