@@ -13,9 +13,12 @@ from PyQt5.QtWidgets import (
     QLineEdit, QSpinBox, QPushButton, QLabel, QSplitter, QTreeView,
     QTreeWidget, QTreeWidgetItem, QFileSystemModel, QToolBar, QAction,
     QProgressBar, QMessageBox, QInputDialog, QFileDialog, QStatusBar,
+    QComboBox, QApplication,
 )
 
 from scpgui.ssh_client import SCPClient, SSHConnectionError
+from scpgui import connections
+from scpgui import theme
 
 
 # ---------------------------------------------------------------------- #
@@ -88,14 +91,37 @@ class MainWindow(QMainWindow):
 
         self.client = SCPClient()
         self.remote_path = "/"
+        self.dark_mode = True
 
         self._build_ui()
+        self._reload_profiles()
 
     # ------------------------------------------------------------------ #
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
+
+        # --- saved connections bar ---
+        # Lets you jump between links like "PC -> Build VM" or
+        # "VM1 -> VM2" without retyping host/user/auth each time.
+        profiles_bar = QHBoxLayout()
+        profiles_bar.addWidget(QLabel("Saved:"))
+        self.profiles_combo = QComboBox()
+        self.profiles_combo.setMinimumWidth(220)
+        self.profiles_combo.currentIndexChanged.connect(self._on_profile_selected)
+        profiles_bar.addWidget(self.profiles_combo)
+        save_profile_btn = QPushButton("Save As...")
+        save_profile_btn.clicked.connect(self._on_save_profile)
+        profiles_bar.addWidget(save_profile_btn)
+        delete_profile_btn = QPushButton("Delete")
+        delete_profile_btn.clicked.connect(self._on_delete_profile)
+        profiles_bar.addWidget(delete_profile_btn)
+        profiles_bar.addStretch()
+        self.theme_btn = QPushButton("☀ Light mode")
+        self.theme_btn.clicked.connect(self._toggle_theme)
+        profiles_bar.addWidget(self.theme_btn)
+        outer.addLayout(profiles_bar)
 
         # --- connection bar ---
         conn_bar = QHBoxLayout()
@@ -199,6 +225,76 @@ class MainWindow(QMainWindow):
         self.upload_btn.setEnabled(enabled)
         self.download_btn.setEnabled(enabled)
         self.remote_tree.setEnabled(enabled)
+
+    # ------------------------------------------------------------------ #
+    # Saved connection profiles
+    # ------------------------------------------------------------------ #
+    def _reload_profiles(self):
+        self._profiles = connections.load_profiles()
+        self.profiles_combo.blockSignals(True)
+        self.profiles_combo.clear()
+        self.profiles_combo.addItem("-- select a saved connection --")
+        for p in self._profiles:
+            self.profiles_combo.addItem(p.name)
+        self.profiles_combo.blockSignals(False)
+
+    def _on_profile_selected(self, index):
+        if index <= 0:
+            return
+        profile = self._profiles[index - 1]
+        self.host_edit.setText(profile.host)
+        self.port_edit.setValue(profile.port)
+        self.user_edit.setText(profile.username)
+        self.pass_edit.clear()  # never stored -- type it if this profile uses a password
+        self.key_edit.setText(profile.key_path if profile.auth_type == "key" else "")
+
+    def _on_save_profile(self):
+        host = self.host_edit.text().strip()
+        username = self.user_edit.text().strip()
+        if not host or not username:
+            QMessageBox.warning(self, "Missing info", "Fill in host and username first.")
+            return
+
+        default_name = f"{username}@{host}"
+        name, ok = QInputDialog.getText(self, "Save connection", "Name:",
+                                         text=default_name)
+        if not (ok and name):
+            return
+
+        key_path = self.key_edit.text().strip()
+        auth_type = "key" if key_path else "password"
+        profile = connections.ConnectionProfile(
+            name=name, host=host, port=self.port_edit.value(),
+            username=username, auth_type=auth_type, key_path=key_path,
+        )
+        connections.upsert_profile(profile)
+        self._reload_profiles()
+        self.profiles_combo.setCurrentText(name)
+        self.status_bar.showMessage(f"Saved connection '{name}'")
+
+    def _on_delete_profile(self):
+        index = self.profiles_combo.currentIndex()
+        if index <= 0:
+            return
+        profile = self._profiles[index - 1]
+        confirm = QMessageBox.question(self, "Delete connection",
+                                        f"Delete saved connection '{profile.name}'?")
+        if confirm == QMessageBox.Yes:
+            connections.delete_profile(profile.name)
+            self._reload_profiles()
+
+    # ------------------------------------------------------------------ #
+    # Theme
+    # ------------------------------------------------------------------ #
+    def _toggle_theme(self):
+        app = QApplication.instance()
+        self.dark_mode = not self.dark_mode
+        if self.dark_mode:
+            theme.apply_dark_theme(app)
+            self.theme_btn.setText("☀ Light mode")
+        else:
+            theme.apply_light_theme(app)
+            self.theme_btn.setText("🌙 Dark mode")
 
     # ------------------------------------------------------------------ #
     # Connection handling

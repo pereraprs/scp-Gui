@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1b2735"/>
+      <stop offset="100%" stop-color="#0d1117"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#5ee7d1"/>
+      <stop offset="100%" stop-color="#2a9d8f"/>
+    </linearGradient>
+  </defs>
+
+  <!-- badge -->
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="url(#bg)"/>
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="none"
+        stroke="#2a9d8f" stroke-width="4" opacity="0.5"/>
+
+  <!-- padlock body -->
+  <rect x="86" y="132" width="84" height="66" rx="10" fill="url(#accent)"/>
+  <!-- padlock shackle -->
+  <path d="M 100 132 L 100 104 A 28 28 0 0 1 156 104 L 156 132"
+        fill="none" stroke="url(#accent)" stroke-width="12" stroke-linecap="round"/>
+  <!-- keyhole -->
+  <circle cx="128" cy="157" r="7" fill="#0d1117"/>
+  <rect x="124" y="160" width="8" height="16" rx="3" fill="#0d1117"/>
+
+  <!-- transfer arrows (left = up/out, right = down/in) -->
+  <g stroke="#e8fbf7" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- up arrow, left side -->
+    <path d="M 56 118 L 56 70 M 40 86 L 56 70 L 72 86"/>
+    <!-- down arrow, right side -->
+    <path d="M 200 90 L 200 138 M 184 122 L 200 138 L 216 122"/>
+  </g>
+</svg>

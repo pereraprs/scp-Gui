@@ -14,6 +14,7 @@ mkdir -p "$PKG_ROOT/usr/lib/python3/dist-packages"
 mkdir -p "$PKG_ROOT/usr/bin"
 mkdir -p "$PKG_ROOT/usr/share/applications"
 mkdir -p "$PKG_ROOT/usr/share/doc/scp-gui"
+mkdir -p "$PKG_ROOT/usr/share/icons/hicolor/scalable/apps"
 
 cp -r scpgui "$PKG_ROOT/usr/lib/python3/dist-packages/"
 rm -rf "$PKG_ROOT/usr/lib/python3/dist-packages/scpgui/__pycache__"
@@ -25,12 +26,16 @@ EOF
 chmod 755 "$PKG_ROOT/usr/bin/scp-gui"
 
 cp packaging/debian/control "$PKG_ROOT/DEBIAN/control"
+cp packaging/debian/postinst "$PKG_ROOT/DEBIAN/postinst"
+chmod 755 "$PKG_ROOT/DEBIAN/postinst"
 cp packaging/debian/scp-gui.desktop "$PKG_ROOT/usr/share/applications/scp-gui.desktop"
 cp packaging/debian/copyright "$PKG_ROOT/usr/share/doc/scp-gui/copyright"
+cp packaging/debian/icons/scp-gui.svg "$PKG_ROOT/usr/share/icons/hicolor/scalable/apps/scp-gui.svg"
 
 find "$PKG_ROOT" -type d -exec chmod 755 {} \;
 find "$PKG_ROOT" -type f -exec chmod 644 {} \;
 chmod 755 "$PKG_ROOT/usr/bin/scp-gui"
+chmod 755 "$PKG_ROOT/DEBIAN/postinst"
 
 dpkg-deb --build --root-owner-group "$PKG_ROOT"
 
