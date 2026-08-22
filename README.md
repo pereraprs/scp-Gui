@@ -11,6 +11,14 @@ etc.). Think of it as a lightweight WinSCP alternative written in Python.
 - Create folders, delete files/folders, navigate remote directories
 - Background threads keep the UI responsive during transfers, with a
   live progress bar
+- Saved connection profiles — name a link (e.g. "PC → Build VM",
+  "VM1 → VM2") and reconnect without retyping host/user/auth; works for
+  host↔VM and VM↔VM links alike, with password- and key-based auth
+  side by side. Passwords are never written to disk, only the auth
+  method used.
+- Dark theme by default, with a one-click toggle to light mode
+- Custom app icon and `.desktop` entry (shows up in your applications
+  menu after installing the `.deb`)
 
 ## Project layout
 ```
@@ -18,10 +26,16 @@ scp-gui/
 ├── scpgui/
 │   ├── __init__.py
 │   ├── ssh_client.py    # paramiko-based SFTP/SCP backend
+│   ├── connections.py   # saved connection profiles
+│   ├── theme.py         # dark/light theme switching
 │   ├── main_window.py   # PyQt5 GUI
 │   └── main.py          # entry point
+├── packaging/
+│   ├── build-deb.sh     # rebuilds the .deb from source
+│   └── debian/          # control, postinst, .desktop, copyright, icon
 ├── requirements.txt
 ├── setup.py
+├── LICENSE
 └── README.md
 ```
 
@@ -73,3 +87,6 @@ builds it with `dpkg-deb`. Bump the version in
   legacy SCP protocol, because SFTP supports directory listing and richer
   error handling — from a user's perspective it's the same "secure copy"
   workflow.
+- Saved connections live in `~/.config/scp-gui/connections.json`, local
+  to whichever machine the app is installed on — copying that file
+  between a host and a VM carries your saved links over too.
