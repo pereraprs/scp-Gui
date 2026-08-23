@@ -91,6 +91,40 @@ class TransferWorker(QThread):
             self.finished.emit(False, str(exc))
 
 
+class RootToggleWorker(QThread):
+    """Switches the active SFTP session between the normal login user
+    and root (via sudo), or vice versa.
+
+    When switching TO root with no password supplied yet, it first
+    checks whether this account has passwordless sudo -- if so it
+    elevates immediately; if not, it emits need_password so the GUI
+    thread can pop up a prompt and re-run the worker with it.
+    """
+    finished = pyqtSignal(bool, str, bool)  # success, message, now_root
+    need_password = pyqtSignal()
+
+    def __init__(self, client, enable_root, sudo_password=None):
+        super().__init__()
+        self.client = client
+        self.enable_root = enable_root
+        self.sudo_password = sudo_password
+
+    def run(self):
+        try:
+            if self.enable_root:
+                if self.sudo_password is None:
+                    if not self.client.check_passwordless_sudo():
+                        self.need_password.emit()
+                        return
+                self.client.elevate_to_root(self.sudo_password)
+                self.finished.emit(True, "Switched to root", True)
+            else:
+                self.client.drop_to_user()
+                self.finished.emit(True, "Switched back to your normal user", False)
+        except SSHConnectionError as exc:
+            self.finished.emit(False, str(exc), self.client.root_mode)
+
+
 # ---------------------------------------------------------------------- #
 # Main window
 # ---------------------------------------------------------------------- #
@@ -214,7 +248,14 @@ class MainWindow(QMainWindow):
         mkdir_btn.clicked.connect(self._on_mkdir)
         delete_btn = QPushButton("Delete")
         delete_btn.clicked.connect(self._on_delete_remote)
-        for b in (refresh_btn, mkdir_btn, delete_btn):
+        self.root_toggle_btn = QPushButton("Switch to Root")
+        self.root_toggle_btn.setToolTip(
+            "Browse and modify the whole VM filesystem via sudo, not "
+            "just what your login user can see. Needs sudo rights on "
+            "the remote account."
+        )
+        self.root_toggle_btn.clicked.connect(self._on_root_toggle_clicked)
+        for b in (refresh_btn, mkdir_btn, delete_btn, self.root_toggle_btn):
             remote_btns.addWidget(b)
         remote_layout.addLayout(remote_btns)
         splitter.addWidget(remote_container)
@@ -237,6 +278,7 @@ class MainWindow(QMainWindow):
         self.upload_btn.setEnabled(enabled)
         self.download_btn.setEnabled(enabled)
         self.remote_tree.setEnabled(enabled)
+        self.root_toggle_btn.setEnabled(enabled)
 
     # ------------------------------------------------------------------ #
     # Saved connection profiles
@@ -341,6 +383,7 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(message)
         if success:
             self._set_remote_controls_enabled(True)
+            self.root_toggle_btn.setText("Switch to Root")  # fresh connection always starts as the login user
             try:
                 home_dir = self.client.get_home_dir()
             except SSHConnectionError:
@@ -348,6 +391,52 @@ class MainWindow(QMainWindow):
             self._populate_root(home_dir)
         else:
             QMessageBox.critical(self, "Connection failed", message)
+
+    def _safe_home_dir(self):
+        try:
+            return self.client.get_home_dir()
+        except SSHConnectionError:
+            return "."
+
+    # ------------------------------------------------------------------ #
+    # Root / sudo elevation
+    # ------------------------------------------------------------------ #
+    def _on_root_toggle_clicked(self):
+        enable_root = not self.client.root_mode
+        self._start_root_toggle(enable_root, sudo_password=None)
+
+    def _start_root_toggle(self, enable_root, sudo_password):
+        self.root_toggle_btn.setEnabled(False)
+        self.status_bar.showMessage(
+            "Checking sudo access..." if enable_root
+            else "Switching back to your normal user..."
+        )
+        self._root_worker = RootToggleWorker(self.client, enable_root, sudo_password)
+        self._root_worker.need_password.connect(self._on_root_password_needed)
+        self._root_worker.finished.connect(self._on_root_toggle_finished)
+        self._root_worker.start()
+
+    def _on_root_password_needed(self):
+        password, ok = QInputDialog.getText(
+            self, "Sudo password",
+            f"sudo password for {self.client.username}@{self.client.host}:",
+            echo=QLineEdit.Password,
+        )
+        if ok and password:
+            self._start_root_toggle(True, password)
+        else:
+            self.root_toggle_btn.setEnabled(True)
+            self.status_bar.showMessage("Root switch cancelled")
+
+    def _on_root_toggle_finished(self, success, message, now_root):
+        self.root_toggle_btn.setEnabled(True)
+        self.status_bar.showMessage(message)
+        if success:
+            self.root_toggle_btn.setText("Switch to User" if now_root else "Switch to Root")
+            home_dir = "/" if now_root else self._safe_home_dir()
+            self._populate_root(home_dir)
+        else:
+            QMessageBox.critical(self, "Root switch failed", message)
 
     # ------------------------------------------------------------------ #
     # Remote browsing -- hierarchical tree, lazily loaded per folder
