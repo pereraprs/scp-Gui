@@ -4,11 +4,10 @@ main_window.py
 PyQt5 GUI: a dual-pane file manager (local | remote) for SCP/SFTP transfers,
 similar in spirit to WinSCP / FileZilla.
 
-The remote pane is a real hierarchical tree (same idea as the local
-QFileSystemModel/QTreeView pane): folders show an expand arrow, expanding
-one lazily fetches its children over SFTP, and collapsing/re-expanding
-never loses your place -- unlike a single "current directory" view where
-navigating into a folder discards the parent listing.
+The remote pane shows one directory at a time (like the local pane's
+current folder), with an "Up" button to go to the parent directory and
+double-click to enter a folder. Folders and files get distinct icons on
+both sides, same as a normal desktop file manager.
 """
 
 import os
@@ -19,17 +18,12 @@ from PyQt5.QtWidgets import (
     QLineEdit, QSpinBox, QPushButton, QLabel, QSplitter, QTreeView,
     QTreeWidget, QTreeWidgetItem, QFileSystemModel, QToolBar, QAction,
     QProgressBar, QMessageBox, QInputDialog, QFileDialog, QStatusBar,
-    QComboBox, QApplication,
+    QComboBox, QApplication, QStyle,
 )
 
 from scpgui.ssh_client import SCPClient, SSHConnectionError
 from scpgui import connections
 from scpgui import theme
-
-# Extra data roles stored on each remote QTreeWidgetItem, alongside the
-# existing Qt.UserRole (used for is_dir).
-PATH_ROLE = Qt.UserRole + 1
-LOADED_ROLE = Qt.UserRole + 2
 
 
 # ---------------------------------------------------------------------- #
@@ -135,9 +129,8 @@ class MainWindow(QMainWindow):
         self.resize(1100, 650)
 
         self.client = SCPClient()
+        self.remote_path = "/"
         self.dark_mode = True
-        self._root_item = None            # top-level remote tree item (home dir)
-        self._pending_transfer_dir = None  # directory item to refresh after a transfer
 
         self._build_ui()
         self._reload_profiles()
@@ -147,6 +140,12 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
+
+        # Standard folder/file icons -- same idea as the local pane, which
+        # gets these automatically from QFileSystemModel.
+        style = self.style()
+        self._folder_icon = style.standardIcon(QStyle.SP_DirIcon)
+        self._file_icon = style.standardIcon(QStyle.SP_FileIcon)
 
         # --- saved connections bar ---
         # Lets you jump between links like "PC -> Build VM" or
@@ -230,7 +229,7 @@ class MainWindow(QMainWindow):
         mid_layout.addStretch()
         splitter.addWidget(mid_container)
 
-        # remote pane -- a real expandable tree, same idea as the local one
+        # remote pane -- current directory + Up button, same shape as before
         remote_container = QWidget()
         remote_layout = QVBoxLayout(remote_container)
         self.remote_path_label = QLabel("Remote: (not connected)")
@@ -238,12 +237,13 @@ class MainWindow(QMainWindow):
         self.remote_tree = QTreeWidget()
         self.remote_tree.setHeaderLabels(["Name", "Size", "Type"])
         self.remote_tree.setColumnWidth(0, 220)
-        self.remote_tree.itemExpanded.connect(self._on_item_expanded)
-        self.remote_tree.currentItemChanged.connect(self._on_remote_selection_changed)
+        self.remote_tree.itemDoubleClicked.connect(self._on_remote_double_click)
         remote_layout.addWidget(self.remote_tree)
         remote_btns = QHBoxLayout()
+        up_btn = QPushButton("Up")
+        up_btn.clicked.connect(self._remote_go_up)
         refresh_btn = QPushButton("Refresh")
-        refresh_btn.clicked.connect(self._on_refresh_clicked)
+        refresh_btn.clicked.connect(self._refresh_remote)
         mkdir_btn = QPushButton("New Folder")
         mkdir_btn.clicked.connect(self._on_mkdir)
         delete_btn = QPushButton("Delete")
@@ -255,7 +255,7 @@ class MainWindow(QMainWindow):
             "the remote account."
         )
         self.root_toggle_btn.clicked.connect(self._on_root_toggle_clicked)
-        for b in (refresh_btn, mkdir_btn, delete_btn, self.root_toggle_btn):
+        for b in (up_btn, refresh_btn, mkdir_btn, delete_btn, self.root_toggle_btn):
             remote_btns.addWidget(b)
         remote_layout.addLayout(remote_btns)
         splitter.addWidget(remote_container)
@@ -384,11 +384,8 @@ class MainWindow(QMainWindow):
         if success:
             self._set_remote_controls_enabled(True)
             self.root_toggle_btn.setText("Switch to Root")  # fresh connection always starts as the login user
-            try:
-                home_dir = self.client.get_home_dir()
-            except SSHConnectionError:
-                home_dir = "."
-            self._populate_root(home_dir)
+            self.remote_path = self._safe_home_dir()
+            self._refresh_remote()
         else:
             QMessageBox.critical(self, "Connection failed", message)
 
@@ -433,126 +430,65 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(message)
         if success:
             self.root_toggle_btn.setText("Switch to User" if now_root else "Switch to Root")
-            home_dir = "/" if now_root else self._safe_home_dir()
-            self._populate_root(home_dir)
+            self.remote_path = "/" if now_root else self._safe_home_dir()
+            self._refresh_remote()
         else:
             QMessageBox.critical(self, "Root switch failed", message)
 
     # ------------------------------------------------------------------ #
-    # Remote browsing -- hierarchical tree, lazily loaded per folder
+    # Remote browsing
     # ------------------------------------------------------------------ #
-    def _populate_root(self, home_dir):
-        self.remote_tree.clear()
-        root = QTreeWidgetItem([home_dir, "", "Folder"])
-        root.setData(0, Qt.UserRole, True)      # is_dir
-        root.setData(0, PATH_ROLE, home_dir)
-        root.setData(0, LOADED_ROLE, False)
-        self.remote_tree.addTopLevelItem(root)
-        self._root_item = root
-        self._add_dummy_child(root)
-        self.remote_tree.expandItem(root)  # triggers _on_item_expanded to load real children
-        self.remote_path_label.setText(f"Remote: {home_dir}")
-
-    @staticmethod
-    def _add_dummy_child(item):
-        placeholder = QTreeWidgetItem(["Loading...", "", ""])
-        placeholder.setData(0, Qt.UserRole, False)
-        item.addChild(placeholder)
-
-    def _load_children(self, item):
-        """Fetch this directory's children over SFTP and populate the item."""
-        path = item.data(0, PATH_ROLE)
+    def _refresh_remote(self):
         try:
-            entries = self.client.list_dir(path)
+            entries = self.client.list_dir(self.remote_path)
         except SSHConnectionError as exc:
             QMessageBox.critical(self, "Error", str(exc))
             return
 
-        item.takeChildren()  # drop the "Loading..." placeholder (or stale children)
+        self.remote_tree.clear()
         for entry in entries:
             size_str = "" if entry.is_dir else str(entry.size)
             type_str = "Folder" if entry.is_dir else "File"
-            child = QTreeWidgetItem([entry.name, size_str, type_str])
-            child.setData(0, Qt.UserRole, entry.is_dir)
-            child.setData(0, PATH_ROLE, path.rstrip("/") + "/" + entry.name)
-            child.setData(0, LOADED_ROLE, False)
-            if entry.is_dir:
-                self._add_dummy_child(child)
-            item.addChild(child)
-        item.setData(0, LOADED_ROLE, True)
+            item = QTreeWidgetItem([entry.name, size_str, type_str])
+            item.setIcon(0, self._folder_icon if entry.is_dir else self._file_icon)
+            item.setData(0, Qt.UserRole, entry.is_dir)
+            self.remote_tree.addTopLevelItem(item)
+        self.remote_path_label.setText(f"Remote: {self.remote_path}")
 
-    def _on_item_expanded(self, item):
-        if not item.data(0, LOADED_ROLE):
-            self._load_children(item)
-
-    def _reload_item(self, item):
-        """Force-refresh a directory node's children (e.g. after a change)."""
-        if item is None:
+    def _remote_go_up(self):
+        if self.remote_path in (".", "/"):
             return
-        item.setData(0, LOADED_ROLE, False)
-        if item.isExpanded():
-            self._load_children(item)
-        else:
-            item.takeChildren()
-            self._add_dummy_child(item)
+        self.remote_path = os.path.dirname(self.remote_path.rstrip("/")) or "/"
+        self._refresh_remote()
 
-    def _on_refresh_clicked(self):
-        item = self.remote_tree.currentItem()
-        if item is not None:
-            target = item if item.data(0, Qt.UserRole) else (item.parent() or self._root_item)
-            self._reload_item(target)
-        elif self._root_item is not None:
-            self._reload_item(self._root_item)
-
-    def _on_remote_selection_changed(self, current, _previous):
-        if current is None:
-            return
-        path = current.data(0, PATH_ROLE)
-        is_dir = current.data(0, Qt.UserRole)
-        target = path if is_dir else self._parent_path(current)
-        self.remote_path_label.setText(f"Remote: {target}")
-
-    def _parent_path(self, item):
-        parent = item.parent()
-        if parent is not None:
-            return parent.data(0, PATH_ROLE)
-        return self._root_item.data(0, PATH_ROLE) if self._root_item else "/"
-
-    def _current_remote_dir_item(self):
-        """The directory item that uploads / new folders should target."""
-        item = self.remote_tree.currentItem()
-        if item is None:
-            return self._root_item
-        if item.data(0, Qt.UserRole):
-            return item
-        return item.parent() or self._root_item
+    def _on_remote_double_click(self, item, _column):
+        is_dir = item.data(0, Qt.UserRole)
+        if is_dir:
+            self.remote_path = self.remote_path.rstrip("/") + "/" + item.text(0)
+            self._refresh_remote()
 
     def _on_mkdir(self):
-        dir_item = self._current_remote_dir_item()
-        if dir_item is None:
-            return
         name, ok = QInputDialog.getText(self, "New folder", "Folder name:")
         if ok and name:
-            dir_path = dir_item.data(0, PATH_ROLE)
             try:
-                self.client.mkdir(dir_path.rstrip("/") + "/" + name)
-                self._reload_item(dir_item)
+                self.client.mkdir(self.remote_path.rstrip("/") + "/" + name)
+                self._refresh_remote()
             except SSHConnectionError as exc:
                 QMessageBox.critical(self, "Error", str(exc))
 
     def _on_delete_remote(self):
         item = self.remote_tree.currentItem()
-        if not item or item is self._root_item:
+        if not item:
             return
         is_dir = item.data(0, Qt.UserRole)
-        full_path = item.data(0, PATH_ROLE)
         confirm = QMessageBox.question(
             self, "Confirm delete", f"Delete '{item.text(0)}'?",
         )
         if confirm == QMessageBox.Yes:
             try:
+                full_path = self.remote_path.rstrip("/") + "/" + item.text(0)
                 self.client.remove(full_path, is_dir)
-                self._reload_item(item.parent() or self._root_item)
+                self._refresh_remote()
             except SSHConnectionError as exc:
                 QMessageBox.critical(self, "Error", str(exc))
 
@@ -564,32 +500,24 @@ class MainWindow(QMainWindow):
         if not index.isValid():
             QMessageBox.information(self, "Select a file", "Pick a local file or folder first.")
             return
-        dir_item = self._current_remote_dir_item()
-        if dir_item is None:
-            QMessageBox.information(self, "Not connected", "Connect to a remote host first.")
-            return
-
         local_path = self.local_model.filePath(index)
         is_dir = self.local_model.isDir(index)
-        remote_dir = dir_item.data(0, PATH_ROLE)
-        remote_target = remote_dir.rstrip("/") + "/" + os.path.basename(local_path)
-        self._pending_transfer_dir = dir_item
+        remote_target = self.remote_path.rstrip("/") + "/" + os.path.basename(local_path)
         self._start_transfer("upload", local_path, remote_target, is_dir)
 
     def _on_download(self):
         item = self.remote_tree.currentItem()
-        if not item or item is self._root_item:
+        if not item:
             QMessageBox.information(self, "Select a file", "Pick a remote file or folder first.")
             return
         is_dir = item.data(0, Qt.UserRole)
-        remote_path = item.data(0, PATH_ROLE)
+        remote_path = self.remote_path.rstrip("/") + "/" + item.text(0)
 
         local_dir = QFileDialog.getExistingDirectory(self, "Choose download destination",
                                                        os.path.expanduser("~"))
         if not local_dir:
             return
         local_target = os.path.join(local_dir, item.text(0))
-        self._pending_transfer_dir = None
         self._start_transfer("download", remote_path, local_target, is_dir)
 
     def _start_transfer(self, action, src, dst, is_dir):
@@ -609,11 +537,10 @@ class MainWindow(QMainWindow):
     def _on_transfer_finished(self, success, message):
         self.progress_bar.setVisible(False)
         self.status_bar.showMessage(message)
-        if success and self._pending_transfer_dir is not None:
-            self._reload_item(self._pending_transfer_dir)
-        elif not success:
+        if success:
+            self._refresh_remote()
+        else:
             QMessageBox.critical(self, "Transfer failed", message)
-        self._pending_transfer_dir = None
 
     # ------------------------------------------------------------------ #
     def closeEvent(self, event):
