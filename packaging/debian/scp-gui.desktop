@@ -2,7 +2,7 @@
 Name=SCP GUI
 Comment=Secure file transfer over SSH (SFTP/SCP)
 Exec=scp-gui
-Icon=scp-gui
+Icon=/usr/share/pixmaps/scp-gui.jpeg
 Terminal=false
 Type=Application
 Categories=Network;FileTransfer;

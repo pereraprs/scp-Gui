@@ -14,6 +14,7 @@ mkdir -p "$PKG_ROOT/usr/lib/python3/dist-packages"
 mkdir -p "$PKG_ROOT/usr/bin"
 mkdir -p "$PKG_ROOT/usr/share/applications"
 mkdir -p "$PKG_ROOT/usr/share/doc/scp-gui"
+mkdir -p "$PKG_ROOT/usr/share/pixmaps"
 mkdir -p "$PKG_ROOT/usr/share/icons/hicolor/scalable/apps"
 
 cp -r scpgui "$PKG_ROOT/usr/lib/python3/dist-packages/"
@@ -30,6 +31,7 @@ cp packaging/debian/postinst "$PKG_ROOT/DEBIAN/postinst"
 chmod 755 "$PKG_ROOT/DEBIAN/postinst"
 cp packaging/debian/scp-gui.desktop "$PKG_ROOT/usr/share/applications/scp-gui.desktop"
 cp packaging/debian/copyright "$PKG_ROOT/usr/share/doc/scp-gui/copyright"
+cp logo.jpeg "$PKG_ROOT/usr/share/pixmaps/scp-gui.jpeg"
 cp packaging/debian/icons/scp-gui.svg "$PKG_ROOT/usr/share/icons/hicolor/scalable/apps/scp-gui.svg"
 
 find "$PKG_ROOT" -type d -exec chmod 755 {} \;

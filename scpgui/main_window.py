@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QSpinBox, QPushButton, QLabel, QSplitter, QTreeView,
     QTreeWidget, QTreeWidgetItem, QFileSystemModel,
     QProgressBar, QMessageBox, QInputDialog, QFileDialog, QStatusBar,
-    QComboBox, QApplication, QStyle,
+    QComboBox, QApplication, QStyle, QSizePolicy,
 )
 
 from scpgui.ssh_client import SCPClient, SSHConnectionError
@@ -299,7 +299,7 @@ class MainWindow(QMainWindow):
         profiles_bar = QHBoxLayout()
         profiles_bar.addWidget(QLabel("Saved:"))
         w["profiles_combo"] = QComboBox()
-        w["profiles_combo"].setMinimumWidth(160)
+        w["profiles_combo"].setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         w["profiles_combo"].currentIndexChanged.connect(
             lambda idx, s=side: self._on_profile_selected(s, idx))
         profiles_bar.addWidget(w["profiles_combo"])
@@ -338,6 +338,10 @@ class MainWindow(QMainWindow):
         conn_bar.addWidget(QLabel("Key:")); conn_bar.addWidget(w["key_edit"])
         conn_bar.addWidget(key_browse)
         conn_bar.addWidget(w["connect_btn"])
+        for widget in (w["host_edit"], w["port_edit"], w["user_edit"],
+                       w["pass_edit"], w["key_edit"], key_browse,
+                       w["connect_btn"]):
+            widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         outer.addLayout(conn_bar)
 
         # path + tree
