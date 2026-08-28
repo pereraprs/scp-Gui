@@ -187,10 +187,10 @@ class RootToggleWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("SCP GUI — Secure File Transfer")
+        self.setWindowTitle("scp gui — Secure File Transfer")
         icon_paths = [
-            "/usr/share/pixmaps/scp-gui.jpeg",
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "logo.jpeg"),
+            "/usr/share/pixmaps/scp-gui.png",
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "logo.png"),
         ]
         icon_path = next((path for path in icon_paths if os.path.exists(path)), None)
         if icon_path:

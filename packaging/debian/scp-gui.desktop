@@ -1,8 +1,10 @@
 [Desktop Entry]
-Name=SCP GUI
+Name=scp gui
+GenericName=Secure File Transfer
 Comment=Secure file transfer over SSH (SFTP/SCP)
+Keywords=scp;ssh;sftp;file;transfer;
 Exec=scp-gui
-Icon=/usr/share/pixmaps/scp-gui.jpeg
+Icon=/usr/share/pixmaps/scp-gui.png
 Terminal=false
 Type=Application
 Categories=Network;FileTransfer;

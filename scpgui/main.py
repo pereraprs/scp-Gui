@@ -18,10 +18,10 @@ FONT_SIZE_INCREASE = 2
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("SCP GUI")
+    app.setApplicationName("scp gui")
     icon_paths = [
-        "/usr/share/pixmaps/scp-gui.jpeg",
-        os.path.join(os.path.dirname(os.path.dirname(__file__)), "logo.jpeg"),
+        "/usr/share/pixmaps/scp-gui.png",
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "logo.png"),
     ]
     icon_path = next((path for path in icon_paths if os.path.exists(path)), None)
     if icon_path:
