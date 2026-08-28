@@ -1,14 +1,22 @@
 # SCP GUI
 
-A simple dual-pane GUI application for transferring files securely over
+A dual-pane GUI application for transferring files securely over
 SSH (SCP/SFTP), built for Debian-based Linux systems (Debian, Ubuntu, Mint,
-etc.). Think of it as a lightweight WinSCP alternative written in Python.
+etc.).
 
 ## Features
+- Two modes, switchable from the top of the window:
+  - **PC ↔ Server** — left is your local files, right is one remote server
+  - **Server ↔ Server** — both panes are remote connections (their own
+    host/user/auth), and Transfer moves files directly between two VMs.
+    SFTP has no server-to-server copy, so this stages through a local
+    temp folder behind the scenes and cleans it up automatically — from
+    the UI it's just one "Transfer".
 - Connect via password or SSH private key
-- Browse local and remote file systems side by side
-- Upload / download single files or whole directories (recursive)
-- Create folders, delete files/folders, navigate remote directories
+- Upload / download (or VM-to-VM transfer) single files or whole
+  directories (recursive)
+- Create folders, delete files/folders, navigate remote directories,
+  folder/file icons on every pane
 - Background threads keep the UI responsive during transfers, with a
   live progress bar
 - Saved connection profiles — name a link (e.g. "PC → Build VM",
@@ -16,6 +24,9 @@ etc.). Think of it as a lightweight WinSCP alternative written in Python.
   host↔VM and VM↔VM links alike, with password- and key-based auth
   side by side. Passwords are never written to disk, only the auth
   method used.
+- Root/sudo switch per connection — tries passwordless sudo first and
+  flips instantly if that works, otherwise prompts for the sudo
+  password once
 - Dark theme by default, with a one-click toggle to light mode
 - Custom app icon and `.desktop` entry (shows up in your applications
   menu after installing the `.deb`)
@@ -90,3 +101,7 @@ builds it with `dpkg-deb`. Bump the version in
 - Saved connections live in `~/.config/scp-gui/connections.json`, local
   to whichever machine the app is installed on — copying that file
   between a host and a VM carries your saved links over too.
+- In "Server ↔ Server" mode, a transfer briefly touches local disk (a
+  temp folder under your OS's temp directory) as a relay between the
+  two VMs — this is invisible in the UI but worth knowing if you're on
+  a disk-constrained machine moving very large files.
