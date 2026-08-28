@@ -41,11 +41,13 @@ def apply_dark_theme(app: QApplication):
         QPushButton:disabled { color: #777; }
         QLineEdit, QSpinBox, QComboBox { background-color: #1e1e1f; border: 1px solid #555; padding: 2px; border-radius: 3px; }
         QProgressBar { border: 1px solid #555; border-radius: 3px; text-align: center; }
-        QProgressBar::chunk { background-color: #2a7fbf; }
+        QProgressBar::chunk { background-color: #2e9d5b; }
     """)
 
 
 def apply_light_theme(app: QApplication):
     app.setStyle(QStyleFactory.create("Fusion"))
     app.setPalette(app.style().standardPalette())
-    app.setStyleSheet("")
+    app.setStyleSheet("""
+        QProgressBar::chunk { background-color: #2e9d5b; }
+    """)
