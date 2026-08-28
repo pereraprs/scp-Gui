@@ -24,6 +24,7 @@ import shutil
 import tempfile
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
     QLineEdit, QSpinBox, QPushButton, QLabel, QSplitter, QTreeView,
@@ -187,6 +188,13 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SCP GUI — Secure File Transfer")
+        icon_paths = [
+            "/usr/share/pixmaps/scp-gui.jpeg",
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "logo.jpeg"),
+        ]
+        icon_path = next((path for path in icon_paths if os.path.exists(path)), None)
+        if icon_path:
+            self.setWindowIcon(QIcon(icon_path))
         self.resize(1180, 680)
 
         self.mode = "local"  # "local" (PC<->Server) or "server" (Server<->Server)

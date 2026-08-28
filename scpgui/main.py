@@ -2,7 +2,9 @@
 Entry point for the SCP GUI application.
 Run with:  python3 -m scpgui.main
 """
+import os
 import sys
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QApplication
 
 from scpgui.main_window import MainWindow
@@ -17,6 +19,13 @@ FONT_SIZE_INCREASE = 2
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("SCP GUI")
+    icon_paths = [
+        "/usr/share/pixmaps/scp-gui.jpeg",
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "logo.jpeg"),
+    ]
+    icon_path = next((path for path in icon_paths if os.path.exists(path)), None)
+    if icon_path:
+        app.setWindowIcon(QIcon(icon_path))
     theme.apply_dark_theme(app)  # dark by default; toggle from the toolbar
 
     font = app.font()
