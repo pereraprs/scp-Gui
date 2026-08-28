@@ -30,7 +30,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QSpinBox, QPushButton, QLabel, QSplitter, QTreeView,
     QTreeWidget, QTreeWidgetItem, QFileSystemModel,
     QProgressBar, QMessageBox, QInputDialog, QFileDialog, QStatusBar,
-    QComboBox, QApplication, QStyle, QSizePolicy,
+    QComboBox, QApplication, QStyle, QSizePolicy, QGridLayout,
 )
 
 from scpgui.ssh_client import SCPClient, SSHConnectionError
@@ -187,6 +187,8 @@ class RootToggleWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._default_font_size = QApplication.font().pointSize()
+        self._font_size = self._default_font_size
         self.setWindowTitle("scp gui — Secure File Transfer")
         icon_paths = [
             "/usr/share/pixmaps/scp-gui.png",
@@ -279,6 +281,31 @@ class MainWindow(QMainWindow):
         self._set_pane_controls_enabled("b", False)
         self._set_pane_controls_enabled("a", False)
 
+    def keyPressEvent(self, event):
+        if event.modifiers() & Qt.ControlModifier:
+            if event.key() in (Qt.Key_Plus, Qt.Key_Equal):
+                self._change_font_size(1)
+                event.accept()
+                return
+            if event.key() == Qt.Key_Minus:
+                self._change_font_size(-1)
+                event.accept()
+                return
+            if event.key() == Qt.Key_0:
+                self._set_font_size(self._default_font_size)
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def _change_font_size(self, step):
+        self._set_font_size(self._font_size + step)
+
+    def _set_font_size(self, size):
+        self._font_size = max(8, min(24, size))
+        font = QApplication.font()
+        font.setPointSize(self._font_size)
+        QApplication.instance().setFont(font)
+
     # ------------------------------------------------------------------ #
     # Local filesystem pane (left side, "PC <-> Server" mode)
     # ------------------------------------------------------------------ #
@@ -307,7 +334,8 @@ class MainWindow(QMainWindow):
         profiles_bar = QHBoxLayout()
         profiles_bar.addWidget(QLabel("Saved:"))
         w["profiles_combo"] = QComboBox()
-        w["profiles_combo"].setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        w["profiles_combo"].setMinimumWidth(220)
+        w["profiles_combo"].setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         w["profiles_combo"].currentIndexChanged.connect(
             lambda idx, s=side: self._on_profile_selected(s, idx))
         profiles_bar.addWidget(w["profiles_combo"])
@@ -319,37 +347,47 @@ class MainWindow(QMainWindow):
         profiles_bar.addWidget(del_btn)
         outer.addLayout(profiles_bar)
 
-        # connection bar
-        conn_bar = QHBoxLayout()
+        # Keep the connection controls readable at normal desktop widths.
+        conn_bar = QGridLayout()
+        conn_bar.setColumnStretch(1, 1)
+        conn_bar.setColumnStretch(3, 1)
+        conn_bar.setColumnStretch(5, 1)
+        conn_bar.setColumnStretch(7, 1)
         w["host_edit"] = QLineEdit()
         w["host_edit"].setPlaceholderText("host")
+        w["host_edit"].setMinimumWidth(110)
         w["port_edit"] = QSpinBox()
         w["port_edit"].setRange(1, 65535)
         w["port_edit"].setValue(22)
         w["user_edit"] = QLineEdit()
         w["user_edit"].setPlaceholderText("username")
+        w["user_edit"].setMinimumWidth(110)
         w["pass_edit"] = QLineEdit()
         w["pass_edit"].setPlaceholderText("password (blank for key)")
         w["pass_edit"].setEchoMode(QLineEdit.Password)
+        w["pass_edit"].setMinimumWidth(110)
         w["key_edit"] = QLineEdit()
         w["key_edit"].setPlaceholderText("private key path")
+        w["key_edit"].setMinimumWidth(180)
         key_browse = QPushButton("...")
         key_browse.setMaximumWidth(30)
         key_browse.clicked.connect(lambda _, s=side: self._browse_key(s))
         w["connect_btn"] = QPushButton("Connect")
         w["connect_btn"].clicked.connect(lambda _, s=side: self._on_connect_clicked(s))
 
-        conn_bar.addWidget(QLabel("Host:")); conn_bar.addWidget(w["host_edit"])
-        conn_bar.addWidget(QLabel("Port:")); conn_bar.addWidget(w["port_edit"])
-        conn_bar.addWidget(QLabel("User:")); conn_bar.addWidget(w["user_edit"])
-        conn_bar.addWidget(QLabel("Pass:")); conn_bar.addWidget(w["pass_edit"])
-        conn_bar.addWidget(QLabel("Key:")); conn_bar.addWidget(w["key_edit"])
-        conn_bar.addWidget(key_browse)
-        conn_bar.addWidget(w["connect_btn"])
-        for widget in (w["host_edit"], w["port_edit"], w["user_edit"],
-                       w["pass_edit"], w["key_edit"], key_browse,
-                       w["connect_btn"]):
-            widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        conn_bar.addWidget(QLabel("Host:"), 0, 0)
+        conn_bar.addWidget(w["host_edit"], 0, 1)
+        conn_bar.addWidget(QLabel("Port:"), 0, 2)
+        conn_bar.addWidget(w["port_edit"], 0, 3)
+        conn_bar.addWidget(QLabel("User:"), 0, 4)
+        conn_bar.addWidget(w["user_edit"], 0, 5)
+        conn_bar.addWidget(QLabel("Pass:"), 0, 6)
+        conn_bar.addWidget(w["pass_edit"], 0, 7)
+        conn_bar.addWidget(QLabel("Key:"), 1, 0)
+        conn_bar.addWidget(w["key_edit"], 1, 1, 1, 5)
+        conn_bar.addWidget(key_browse, 1, 6)
+        conn_bar.addWidget(w["connect_btn"], 1, 7)
+        w["connect_btn"].setMinimumWidth(90)
         outer.addLayout(conn_bar)
 
         # path + tree
