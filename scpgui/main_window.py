@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QFileSystemModel,
     QProgressBar, QMessageBox, QInputDialog, QFileDialog, QStatusBar,
     QComboBox, QApplication, QStyle, QSizePolicy, QGridLayout,
+    QDialog, QDialogButtonBox, QCheckBox,
 )
 
 from scpgui.ssh_client import SCPClient, SSHConnectionError
@@ -147,38 +148,118 @@ class RelayTransferWorker(QThread):
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+class DetectRootCommandWorker(QThread):
+    """Probes the remote host (over a plain exec channel, not the SFTP
+    session) for the installed sftp-server binary, so the root-switch
+    dialog can pre-select the right command instead of making the user
+    look it up."""
+    finished = pyqtSignal(object)  # detected path (str) or None
+
+    def __init__(self, client):
+        super().__init__()
+        self.client = client
+
+    def run(self):
+        try:
+            path = self.client.detect_sftp_server_path()
+        except SSHConnectionError:
+            path = None
+        self.finished.emit(path)
+
+
 class RootToggleWorker(QThread):
     """Switches one pane's SFTP session between the normal login user
     and root (via sudo), or vice versa.
 
-    When switching TO root with no password supplied yet, it first
-    checks whether this account has passwordless sudo -- if so it
-    elevates immediately; if not, it emits need_password so the GUI
-    thread can pop up a prompt and re-run the worker with it.
+    When switching TO root, the GUI supplies the command and password
+    entered by the user.
     """
     finished = pyqtSignal(bool, str, bool)  # success, message, now_root
-    need_password = pyqtSignal()
-
-    def __init__(self, client, enable_root, sudo_password=None):
+    def __init__(self, client, enable_root, switch_command=None,
+                 switch_password=None):
         super().__init__()
         self.client = client
         self.enable_root = enable_root
-        self.sudo_password = sudo_password
+        self.switch_command = switch_command
+        self.switch_password = switch_password
 
     def run(self):
         try:
             if self.enable_root:
-                if self.sudo_password is None:
-                    if not self.client.check_passwordless_sudo():
-                        self.need_password.emit()
-                        return
-                self.client.elevate_to_root(self.sudo_password)
+                self.client.elevate_to_root(
+                    self.switch_command, self.switch_password)
                 self.finished.emit(True, "Switched to root", True)
             else:
                 self.client.drop_to_user()
                 self.finished.emit(True, "Switched back to your normal user", False)
         except SSHConnectionError as exc:
             self.finished.emit(False, str(exc), self.client.root_mode)
+
+
+# ---------------------------------------------------------------------- #
+# Root-switch dialog
+# ---------------------------------------------------------------------- #
+class RootSwitchDialog(QDialog):
+    """One popup covering both parts of the sudo/su switch: the exact
+    command (varies by distro -- sudo, su, doas, ...) and, only if it
+    actually needs one, the password for it.
+
+    The password field starts enabled/disabled according to
+    `needs_password_default` (we default that to False when the pane's
+    SSH login used a private key, True when it used a password), but
+    the checkbox always lets the user override it for this one switch.
+    """
+
+    def __init__(self, parent, user_at_host, command_presets,
+                 needs_password_default, default_command=None,
+                 detected=False):
+        super().__init__(parent)
+        self.setWindowTitle("Switch to root")
+        layout = QVBoxLayout(self)
+
+        label_text = ("Command to start the root SFTP server "
+                       "(auto-detected, edit if it's wrong):" if detected
+                       else "Command to start the root SFTP server "
+                            "(couldn't auto-detect -- pick or type one):")
+        layout.addWidget(QLabel(label_text))
+        self.command_combo = QComboBox()
+        self.command_combo.setEditable(True)
+        self.command_combo.addItems(command_presets)
+        if default_command:
+            idx = self.command_combo.findText(default_command)
+            if idx >= 0:
+                self.command_combo.setCurrentIndex(idx)
+            else:
+                self.command_combo.insertItem(0, default_command)
+                self.command_combo.setCurrentIndex(0)
+        layout.addWidget(self.command_combo)
+
+        self.needs_password_check = QCheckBox("This command asks for a password")
+        self.needs_password_check.setChecked(needs_password_default)
+        self.needs_password_check.toggled.connect(self._on_toggle_password)
+        layout.addWidget(self.needs_password_check)
+
+        layout.addWidget(QLabel(f"Password for {user_at_host}:"))
+        self.password_edit = QLineEdit()
+        self.password_edit.setEchoMode(QLineEdit.Password)
+        self.password_edit.setEnabled(needs_password_default)
+        layout.addWidget(self.password_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_toggle_password(self, checked):
+        self.password_edit.setEnabled(checked)
+        if not checked:
+            self.password_edit.clear()
+
+    def command(self):
+        return self.command_combo.currentText().strip()
+
+    def password(self):
+        return self.password_edit.text() if self.needs_password_check.isChecked() else ""
 
 
 # ---------------------------------------------------------------------- #
@@ -204,9 +285,12 @@ class MainWindow(QMainWindow):
         # Per-side remote state. Side "b" is always the right-hand server.
         # Side "a" is only used as a remote connection in "server" mode --
         # in "local" mode the left side is the local filesystem instead.
+        # "auth_is_key" tracks how the pane last connected (private key
+        # vs password), used to pick a sensible default for the root
+        # switch dialog's password checkbox.
         self.panes = {
-            "a": {"client": SCPClient(), "path": "/"},
-            "b": {"client": SCPClient(), "path": "/"},
+            "a": {"client": SCPClient(), "path": "/", "auth_is_key": False},
+            "b": {"client": SCPClient(), "path": "/", "auth_is_key": False},
         }
 
         self._pending_transfer_side = None  # which pane to refresh after a transfer
@@ -533,6 +617,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Missing info", "Host and username are required.")
             return
 
+        # Remember how this pane is authenticating so the root-switch
+        # dialog can default sensibly (key logins usually don't need a
+        # separate sudo/su password; password logins usually do).
+        self.panes[side]["auth_is_key"] = bool(key_path)
+
         w["connect_btn"].setEnabled(False)
         self.status_bar.showMessage(f"Connecting to {host}...")
 
@@ -563,38 +652,86 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
     # Root / sudo elevation (per side)
     # ------------------------------------------------------------------ #
+    # RootSwitchDialog shows these as editable presets -- pick the closest
+    # match and tweak it, or type your own from scratch. Common variants:
+    #   Debian/Ubuntu:  sudo -S -p '' /usr/lib/openssh/sftp-server
+    #   RHEL/Rocky:     sudo -S -p '' /usr/libexec/openssh/sftp-server
+    #   su-based:       su -c /usr/lib/openssh/sftp-server
+    ROOT_COMMAND_PRESETS = [
+        "sudo -S -p '' /usr/lib/openssh/sftp-server",       # Debian/Ubuntu, sudo
+        "sudo -S -p '' /usr/libexec/openssh/sftp-server",   # RHEL/Rocky/Fedora, sudo
+        "su -c /usr/lib/openssh/sftp-server",                # Debian/Ubuntu, su
+        "su -c /usr/libexec/openssh/sftp-server",            # RHEL/Rocky/Fedora, su
+    ]
+
     def _on_root_toggle_clicked(self, side):
         client = self.panes[side]["client"]
         enable_root = not client.root_mode
-        self._start_root_toggle(side, enable_root, sudo_password=None)
+        if not enable_root:
+            self._start_root_toggle(side, False)
+            return
 
-    def _start_root_toggle(self, side, enable_root, sudo_password):
+        # Probe the remote host first (which sftp-server binary exists)
+        # so the dialog can open with the right command already chosen,
+        # instead of asking the user to know their own distro's path.
+        w = self.pane_widgets[side]
+        w["root_toggle_btn"].setEnabled(False)
+        self.status_bar.showMessage("Checking the remote system...")
+        worker = DetectRootCommandWorker(client)
+        worker.finished.connect(
+            lambda path, s=side: self._on_root_command_detected(s, path))
+        setattr(self, f"_detect_worker_{side}", worker)  # keep a reference alive
+        worker.start()
+
+    def _on_root_command_detected(self, side, sftp_server_path):
+        w = self.pane_widgets[side]
+        w["root_toggle_btn"].setEnabled(True)
+        self.status_bar.showMessage("")
+
+        client = self.panes[side]["client"]
+        auth_is_key = self.panes[side].get("auth_is_key", False)
+
+        # We default to the sudo form of the command, since that's by
+        # far the most common setup; if this account actually needs
+        # `su` instead, the combo box still has that preset one click away.
+        default_command = (f"sudo -S -p '' {sftp_server_path}"
+                            if sftp_server_path else None)
+
+        dialog = RootSwitchDialog(
+            self,
+            f"{client.username}@{client.host}",
+            command_presets=self.ROOT_COMMAND_PRESETS,
+            needs_password_default=not auth_is_key,
+            default_command=default_command,
+            detected=bool(sftp_server_path),
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        switch_command = dialog.command()
+        if not switch_command:
+            QMessageBox.warning(self, "Missing command",
+                                 "Enter the command used to start the root SFTP server.")
+            return
+
+        self._start_root_toggle(side, True, switch_command, dialog.password())
+
+    def _start_root_toggle(self, side, enable_root, switch_command=None,
+                           switch_password=None):
         w = self.pane_widgets[side]
         client = self.panes[side]["client"]
         w["root_toggle_btn"].setEnabled(False)
         self.status_bar.showMessage(
-            "Checking sudo access..." if enable_root
+            "Switching to root..." if enable_root
             else "Switching back to your normal user..."
         )
-        worker = RootToggleWorker(client, enable_root, sudo_password)
-        worker.need_password.connect(lambda s=side: self._on_root_password_needed(s))
+        worker = RootToggleWorker(
+            client, enable_root, switch_command=switch_command,
+            switch_password=switch_password)
         worker.finished.connect(
             lambda ok, msg, now_root, s=side: self._on_root_toggle_finished(s, ok, msg, now_root))
         setattr(self, f"_root_worker_{side}", worker)
         worker.start()
-
-    def _on_root_password_needed(self, side):
-        client = self.panes[side]["client"]
-        password, ok = QInputDialog.getText(
-            self, "Sudo password",
-            f"sudo password for {client.username}@{client.host}:",
-            echo=QLineEdit.Password,
-        )
-        if ok and password:
-            self._start_root_toggle(side, True, password)
-        else:
-            self.pane_widgets[side]["root_toggle_btn"].setEnabled(True)
-            self.status_bar.showMessage("Root switch cancelled")
 
     def _on_root_toggle_finished(self, side, success, message, now_root):
         w = self.pane_widgets[side]

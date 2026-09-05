@@ -135,56 +135,103 @@ class SCPClient:
         return self._sftp.normalize(".")
 
     # ------------------------------------------------------------------ #
+    # Plain command execution (separate from the SFTP session)
+    # ------------------------------------------------------------------ #
+    def run_command(self, command, timeout=10):
+        """Run an arbitrary command on the remote shell as the logged-in
+        user and return its stdout, stripped.
+
+        This opens its own exec channel over the same SSH transport --
+        it doesn't touch the active SFTP session, so it's safe to call
+        at any time, including while root_mode is on. Used for things
+        like probing which sftp-server binary is installed so the GUI
+        can suggest the right root-switch command. Raises
+        SSHConnectionError if the channel itself fails (a non-zero exit
+        status from the command is not treated as an error here, since
+        the probes we run intentionally rely on shell "test" failing).
+        """
+        self._require_connection()
+        try:
+            _stdin, stdout, _stderr = self._ssh.exec_command(command, timeout=timeout)
+            output = stdout.read().decode(errors="replace").strip()
+        except (paramiko.SSHException, socket.error, OSError) as exc:
+            raise SSHConnectionError(f"Command failed: {exc}")
+        return output
+
+    # Common locations for the openssh sftp-server helper binary, checked
+    # in order. Debian/Ubuntu and RHEL/Fedora/Rocky use different paths;
+    # other distros sometimes deviate further, which is why this is a
+    # best-effort hint rather than a guarantee -- the GUI should always
+    # let the user override it.
+    SFTP_SERVER_PATHS = [
+        "/usr/lib/openssh/sftp-server",       # Debian/Ubuntu
+        "/usr/libexec/openssh/sftp-server",   # RHEL/Rocky/Fedora
+        "/usr/lib/ssh/sftp-server",           # some Arch/openSUSE setups
+    ]
+
+    def detect_sftp_server_path(self):
+        """Probe the remote host for the installed sftp-server binary.
+
+        Returns the first matching path from SFTP_SERVER_PATHS, or None
+        if none of them exist (or the probe itself fails) -- callers
+        should fall back to letting the user pick manually in that case.
+        """
+        checks = " || ".join(
+            f'{{ [ -e "{p}" ] && echo "{p}"; }}' for p in self.SFTP_SERVER_PATHS
+        )
+        try:
+            output = self.run_command(checks)
+        except SSHConnectionError:
+            return None
+        first_line = output.splitlines()[0].strip() if output else ""
+        return first_line if first_line in self.SFTP_SERVER_PATHS else None
+
+    # ------------------------------------------------------------------ #
     # Root / sudo elevation
     # ------------------------------------------------------------------ #
     # Plain SFTP has no notion of privilege escalation -- it just runs
     # with whatever Unix permissions the logged-in user already has.
-    # These methods work around that by asking the remote shell to run
-    # the sftp-server binary through `sudo` instead of going through the
-    # standard "sftp" subsystem, then wrapping that channel as a normal
-    # SFTPClient. This requires the logged-in account to have sudo
-    # rights on the VM (which is the default for the "ubuntu" user on
-    # most cloud/VM images).
+    # elevate_to_root() works around that by asking the remote shell to
+    # run the sftp-server binary through a caller-supplied command
+    # instead of going through the standard "sftp" subsystem, then
+    # wrapping that channel as a normal SFTPClient.
+    #
+    # The command is caller-supplied (not hardcoded) because it varies
+    # across distros/setups, e.g.:
+    #   Debian/Ubuntu (sudo):  sudo -S -p '' /usr/lib/openssh/sftp-server
+    #   RHEL/Fedora (sudo):    sudo -S -p '' /usr/libexec/openssh/sftp-server
+    #   su-based systems:      su -c /usr/lib/openssh/sftp-server
 
-    def check_passwordless_sudo(self):
-        """True if `sudo` needs no password for this account right now."""
-        self._require_connection()
-        transport = self._ssh.get_transport()
-        channel = transport.open_session()
-        try:
-            channel.settimeout(10)
-            channel.exec_command("sudo -n true")
-            return channel.recv_exit_status() == 0
-        except Exception:
-            return False  # can't confirm passwordless -> fall back to prompting
-        finally:
-            channel.close()
+    def elevate_to_root(self, switch_command, switch_password=None):
+        """Swap the active SFTP session for one running as root.
 
-    def elevate_to_root(self, sudo_password=None,
-                         sftp_server_path="/usr/lib/openssh/sftp-server"):
-        """Swap the active SFTP session for one running as root via sudo.
-
-        Pass sudo_password=None when the account has passwordless sudo
-        (check with check_passwordless_sudo() first) -- sending a
-        password sudo never asked for would otherwise leak into the
-        SFTP binary stream right after it and break the protocol.
+        switch_command is the exact command to run on the remote shell
+        to start a root-privileged sftp-server (see examples above).
+        switch_password is sent to that command's stdin if given; pass
+        None or "" if the command doesn't need one (e.g. passwordless
+        sudo) -- sending a password it never asked for would otherwise
+        leak into the SFTP binary stream right after it and break the
+        protocol.
         """
         self._require_connection()
+        if not switch_command or not switch_command.strip():
+            raise SSHConnectionError("No root switch command was provided.")
+
         transport = self._ssh.get_transport()
         channel = transport.open_session()
         channel.settimeout(15)
 
         try:
-            channel.exec_command(f"sudo -S -p '' {sftp_server_path}")
-            if sudo_password:
-                channel.send((sudo_password + "\n").encode())
+            channel.exec_command(switch_command)
+            if switch_password:
+                channel.send((switch_password + "\n").encode())
             new_sftp = paramiko.SFTPClient(channel)
         except Exception as exc:
             channel.close()
             raise SSHConnectionError(
-                f"Could not start a root session via sudo: {exc}. "
-                "Check the sudo password, or that this account has "
-                "sudo rights on the VM."
+                f"Could not start a root session: {exc}. Check the "
+                "command and password, and that this account has the "
+                "right privileges on the VM."
             )
 
         self._sftp.close()
